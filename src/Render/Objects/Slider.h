@@ -1,9 +1,9 @@
 #pragma once
 #include <raylib.h>
-#include <rlgl.h>
 #include <vector>
 #include <cmath>
 #include <algorithm>
+#include <cstring>
 #include "../../Reader/Beatmap.h"
 #include "../Playfield.h"
 
@@ -180,213 +180,219 @@ namespace Orr::Render::Objects::Slider {
         return path::TruncateToLength(raw, (float)obj.length);
     }
 
-    // Matches stable: MAXRES=24 for cap resolution
-    constexpr int MAXRES = 24;
-    // Stable: slight quad overlap to avoid 1px holes between quad and wedge
-    constexpr float QUAD_OVERLAP_FUDGE = 3.0e-4f;
-    // Stable: shift center vertex slightly to avoid crack on horizontal linear sliders
-    constexpr float QUAD_MIDDLECRACK_FUDGE = 1.0e-4f;
+    constexpr int GRAD_SIZE = 128;
+
+    struct GradientColor {
+        unsigned char r, g, b, a;
+    };
+
+    inline GradientColor g_gradient[GRAD_SIZE];
+    inline bool g_gradientBuilt = false;
+
+    inline void BuildGradient() {
+        if (g_gradientBuilt) {
+            return;
+        }
+        Color shadow = { 0, 0, 0, 255 };
+        Color border = { 255, 255, 255, 255 };
+        Color outer  = { 25, 25, 25, 255 };
+        Color inner  = { 55, 55, 55, 255 };
+        float aa = 3.0f / 256.0f;
+        struct Stop { float p; Color c; };
+        Stop stops[] = {
+            { 0.0f,              { 0, 0, 0, 0 } },
+            { 0.078125f - aa,    shadow },
+            { 0.078125f + aa,    border },
+            { 0.1875f - aa,      border },
+            { 0.1875f + aa,      outer },
+            { 1.0f,              inner },
+        };
+        int n = 6;
+        for (int i = 0; i < GRAD_SIZE; i++) {
+            float t = (float)i / (float)(GRAD_SIZE - 1);
+            GradientColor c = { 0, 0, 0, 0 };
+            for (int s = 0; s < n - 1; s++) {
+                if (t >= stops[s].p && t <= stops[s + 1].p) {
+                    float range = stops[s + 1].p - stops[s].p;
+                    float f = (range > 0.0f) ? (t - stops[s].p) / range : 0.0f;
+                    c.r = (unsigned char)((float)stops[s].c.r + ((float)stops[s + 1].c.r - (float)stops[s].c.r) * f);
+                    c.g = (unsigned char)((float)stops[s].c.g + ((float)stops[s + 1].c.g - (float)stops[s].c.g) * f);
+                    c.b = (unsigned char)((float)stops[s].c.b + ((float)stops[s + 1].c.b - (float)stops[s].c.b) * f);
+                    c.a = (unsigned char)((float)stops[s].c.a + ((float)stops[s + 1].c.a - (float)stops[s].c.a) * f);
+                    break;
+                }
+            }
+            if (t > stops[n - 1].p) {
+                c = { inner.r, inner.g, inner.b, inner.a };
+            }
+            g_gradient[i] = c;
+        }
+        g_gradientBuilt = true;
+    }
+
+    inline GradientColor SampleGradient(float t) {
+        t = std::max(0.0f, std::min(1.0f, t));
+        int idx = (int)(t * (GRAD_SIZE - 1));
+        idx = std::max(0, std::min(GRAD_SIZE - 1, idx));
+        return g_gradient[idx];
+    }
+
+    inline float PointSegDist(float px, float py, float ax, float ay, float bx, float by) {
+        float dx = bx - ax, dy = by - ay;
+        float lenSq = dx * dx + dy * dy;
+        if (lenSq < 1e-8f) {
+            float ex = px - ax, ey = py - ay;
+            return sqrtf(ex * ex + ey * ey);
+        }
+        float t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+        t = std::max(0.0f, std::min(1.0f, t));
+        float cx = ax + t * dx - px;
+        float cy = ay + t * dy - py;
+        return sqrtf(cx * cx + cy * cy);
+    }
 
     struct SliderBodyCache {
-        RenderTexture2D rt = {};
+        Texture2D tex = {};
         float x = 0, y = 0;
         int w = 0, h = 0;
         bool valid = false;
     };
 
-    inline void EmitVertex(float x, float y, float z, Color c) {
-        rlColor4ub(c.r, c.g, c.b, c.a);
-        rlVertex3f(x, y, z);
-    }
-
-    // Matches stable's glDrawQuad: quad split at center line.
-    // Edge vertices at z=0 (near, wins depth test), center at z=-1 (far, loses to edges).
-    inline void DrawSegmentQuad(Vector2 p1, Vector2 p2, float theta, float radius,
-                                Color edgeCol, Color bodyCol) {
-        float cosT = cosf(theta);
-        float sinT = sinf(theta);
-        float perpX = -sinT * radius;
-        float perpY = cosT * radius;
-        float fudgeX = cosT * QUAD_OVERLAP_FUDGE;
-        float fudgeY = sinT * QUAD_OVERLAP_FUDGE;
-        float crackX = perpX * QUAD_MIDDLECRACK_FUDGE;
-        float crackY = perpY * QUAD_MIDDLECRACK_FUDGE;
-        float p1lx = p1.x + perpX - fudgeX;
-        float p1ly = p1.y + perpY - fudgeY;
-        float p2lx = p2.x + perpX + fudgeX;
-        float p2ly = p2.y + perpY + fudgeY;
-        float p1cx = p1.x + crackX - fudgeX;
-        float p1cy = p1.y + crackY - fudgeY;
-        float p2cx = p2.x + crackX + fudgeX;
-        float p2cy = p2.y + crackY + fudgeY;
-        float p1rx = p1.x - perpX - fudgeX;
-        float p1ry = p1.y - perpY - fudgeY;
-        float p2rx = p2.x - perpX + fudgeX;
-        float p2ry = p2.y - perpY + fudgeY;
-        EmitVertex(p1lx, p1ly, 0.0f, edgeCol);
-        EmitVertex(p2lx, p2ly, 0.0f, edgeCol);
-        EmitVertex(p2cx, p2cy, -1.0f, bodyCol);
-        EmitVertex(p1lx, p1ly, 0.0f, edgeCol);
-        EmitVertex(p2cx, p2cy, -1.0f, bodyCol);
-        EmitVertex(p1cx, p1cy, -1.0f, bodyCol);
-        EmitVertex(p1rx, p1ry, 0.0f, edgeCol);
-        EmitVertex(p1cx, p1cy, -1.0f, bodyCol);
-        EmitVertex(p2cx, p2cy, -1.0f, bodyCol);
-        EmitVertex(p1rx, p1ry, 0.0f, edgeCol);
-        EmitVertex(p2cx, p2cy, -1.0f, bodyCol);
-        EmitVertex(p2rx, p2ry, 0.0f, edgeCol);
-    }
-
-    // Matches stable's glDrawHalfCircle + CalculateCapMesh.
-    // Pre-computes unit half-circle vertices, transforms by rotation+scale+translation.
-    // Center at z=-1 (body), rim at z=0 (border).
-    inline void DrawHalfCircle(int count, Vector2 center, float radius, float theta, bool flip,
-                               Color edgeCol, Color bodyCol) {
-        if (count <= 0) {
-            return;
-        }
-        count = std::min(count, MAXRES);
-        float step = (float)M_PI / (float)MAXRES;
-        float cosT = cosf(theta);
-        float sinT = sinf(theta);
-        float scaleY = flip ? -radius : radius;
-        auto transform = [&](float vx, float vy) -> Vector2 {
-            float lx = vx * radius;
-            float ly = vy * scaleY;
-            return { center.x + lx * cosT - ly * sinT, center.y + lx * sinT + ly * cosT };
-        };
-        // cap_verts[0] = (0, -1), cap_verts[MAXRES] = (0, 1)
-        Vector2 cur = transform(0.0f, -1.0f);
-        for (int i = 0; i < count; i++) {
-            float angle = (float)(i + 1) * step;
-            Vector2 next = transform(sinf(angle), -cosf(angle));
-            EmitVertex(center.x, center.y, -1.0f, bodyCol);
-            EmitVertex(cur.x, cur.y, 0.0f, edgeCol);
-            EmitVertex(next.x, next.y, 0.0f, edgeCol);
-            cur = next;
-        }
-    }
-
-    // Matches stable's DrawOGL: render to texture with depth test LEQUAL + depth clear.
     inline SliderBodyCache RenderSliderBody(const std::vector<Vector2>& screenPath, float radius) {
         SliderBodyCache cache;
         if (screenPath.size() < 2) {
             return cache;
         }
+        BuildGradient();
         float minX = screenPath[0].x, maxX = screenPath[0].x;
         float minY = screenPath[0].y, maxY = screenPath[0].y;
         for (auto& p : screenPath) {
-            minX = std::min(minX, p.x);
-            maxX = std::max(maxX, p.x);
-            minY = std::min(minY, p.y);
-            maxY = std::max(maxY, p.y);
+            minX = std::min(minX, p.x); maxX = std::max(maxX, p.x);
+            minY = std::min(minY, p.y); maxY = std::max(maxY, p.y);
         }
-        float pad = radius + 4.0f;
-        minX -= pad;
-        minY -= pad;
-        maxX += pad;
-        maxY += pad;
-        int w = (int)ceilf(maxX - minX);
-        int h = (int)ceilf(maxY - minY);
+        float pad = radius + 2.0f;
+        minX -= pad; minY -= pad; maxX += pad; maxY += pad;
+        float rawW = maxX - minX, rawH = maxY - minY;
+        if (rawW < 1.0f || rawH < 1.0f) {
+            return cache;
+        }
+        constexpr int MAX_DIM = 4096;
+        constexpr int MAX_PIXELS = 4 * 1024 * 1024;
+        float scale = 1.0f;
+        if (rawW > MAX_DIM || rawH > MAX_DIM) {
+            scale = std::min((float)MAX_DIM / rawW, (float)MAX_DIM / rawH);
+        }
+        if (rawW * scale * rawH * scale > MAX_PIXELS) {
+            scale = sqrtf((float)MAX_PIXELS / (rawW * rawH));
+        }
+        scale = std::max(scale, 0.01f);
+        int w = (int)ceilf(rawW * scale);
+        int h = (int)ceilf(rawH * scale);
         if (w < 1 || h < 1) {
             return cache;
         }
-        struct LineSeg {
-            Vector2 p1, p2;
-            float theta, rho;
-        };
-        std::vector<LineSeg> lines;
-        for (int i = 1; i < (int)screenPath.size(); i++) {
-            float lx1 = screenPath[i-1].x - minX;
-            float ly1 = screenPath[i-1].y - minY;
-            float lx2 = screenPath[i].x - minX;
-            float ly2 = screenPath[i].y - minY;
-            float dx = lx2 - lx1;
-            float dy = ly2 - ly1;
-            float rho = sqrtf(dx*dx + dy*dy);
-            if (rho < 0.5f) {
+        float sRadius = radius * scale;
+        float sRadiusSq = sRadius * sRadius;
+        int iRadius = (int)ceilf(sRadius);
+        // Downsample path to reduce segment count
+        float minSpacing = 1.0f / scale;
+        if (screenPath.size() > 2000) {
+            minSpacing = std::max(minSpacing, path::TotalLength(screenPath) / 2000.0f);
+        }
+        std::vector<Vector2> dp;
+        dp.push_back(screenPath[0]);
+        float spacingSq = minSpacing * minSpacing;
+        for (int i = 1; i < (int)screenPath.size() - 1; i++) {
+            float dx = screenPath[i].x - dp.back().x;
+            float dy = screenPath[i].y - dp.back().y;
+            if (dx * dx + dy * dy >= spacingSq) {
+                dp.push_back(screenPath[i]);
+            }
+        }
+        dp.push_back(screenPath.back());
+        std::vector<float> distBuf(w * h, sRadius + 1.0f);
+        for (int s = 1; s < (int)dp.size(); s++) {
+            float ax = (dp[s-1].x - minX) * scale;
+            float ay = (dp[s-1].y - minY) * scale;
+            float bx = (dp[s].x - minX) * scale;
+            float by = (dp[s].y - minY) * scale;
+            int x0 = std::max(0, (int)(std::min(ax, bx) - iRadius));
+            int x1 = std::min(w - 1, (int)(std::max(ax, bx) + iRadius));
+            int y0 = std::max(0, (int)(std::min(ay, by) - iRadius));
+            int y1 = std::min(h - 1, (int)(std::max(ay, by) + iRadius));
+            float sdx = bx - ax, sdy = by - ay;
+            float segLenSq = sdx * sdx + sdy * sdy;
+            for (int py = y0; py <= y1; py++) {
+                float fy = (float)py + 0.5f;
+                for (int px = x0; px <= x1; px++) {
+                    float fx = (float)px + 0.5f;
+                    float t;
+                    if (segLenSq < 1e-8f) {
+                        t = 0.0f;
+                    } else {
+                        t = ((fx - ax) * sdx + (fy - ay) * sdy) / segLenSq;
+                        if (t < 0.0f) {
+                            t = 0.0f;
+                        } else if (t > 1.0f) {
+                            t = 1.0f;
+                        }
+                    }
+                    float cx = ax + t * sdx - fx;
+                    float cy = ay + t * sdy - fy;
+                    float dSq = cx * cx + cy * cy;
+                    if (dSq >= sRadiusSq) {
+                        continue;
+                    }
+                    float d = sqrtf(dSq);
+                    int idx = py * w + px;
+                    if (d < distBuf[idx]) {
+                        distBuf[idx] = d;
+                    }
+                }
+            }
+        }
+        std::vector<unsigned char> pixels(w * h * 4, 0);
+        for (int i = 0; i < w * h; i++) {
+            if (distBuf[i] >= sRadius) {
                 continue;
             }
-            lines.push_back({ {lx1, ly1}, {lx2, ly2}, atan2f(dy, dx), rho });
+            float t = 1.0f - distBuf[i] / sRadius;
+            GradientColor c = SampleGradient(t);
+            pixels[i * 4 + 0] = c.r;
+            pixels[i * 4 + 1] = c.g;
+            pixels[i * 4 + 2] = c.b;
+            pixels[i * 4 + 3] = c.a;
         }
-        if (lines.empty()) {
-            return cache;
-        }
-        Color edgeCol = { 10, 10, 10, 255 };
-        Color bodyCol = { 90, 90, 90, 255 };
-        cache.rt = LoadRenderTexture(w, h);
+        Image img = { pixels.data(), w, h, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 };
+        cache.tex = LoadTextureFromImage(img);
         cache.x = minX;
         cache.y = minY;
-        cache.w = w;
-        cache.h = h;
-        BeginTextureMode(cache.rt);
-        ClearBackground(BLANK);
-        rlDrawRenderBatchActive();
-        rlDisableBackfaceCulling();
-        rlDisableColorBlend();
-        rlEnableDepthTest();
-        rlEnableDepthMask();
-        rlClearColor(0, 0, 0, 0);
-        rlClearScreenBuffers();
-        rlSetTexture(rlGetTextureIdDefault());
-        rlBegin(RL_TRIANGLES);
-        for (int i = 0; i < (int)lines.size(); i++) {
-            auto& curr = lines[i];
-            DrawSegmentQuad(curr.p1, curr.p2, curr.theta, radius, edgeCol, bodyCol);
-            int endTriangles;
-            bool flip;
-            if (i + 1 < (int)lines.size()) {
-                auto& next = lines[i + 1];
-                float dtheta = next.theta - curr.theta;
-                if (dtheta > (float)M_PI) {
-                    dtheta -= 2.0f * (float)M_PI;
-                }
-                if (dtheta < -(float)M_PI) {
-                    dtheta += 2.0f * (float)M_PI;
-                }
-                if (dtheta < 0.0f) {
-                    flip = true;
-                    endTriangles = (int)ceilf((-dtheta) * (float)MAXRES / (float)M_PI);
-                } else if (dtheta > 0.0f) {
-                    flip = false;
-                    endTriangles = (int)ceilf(dtheta * (float)MAXRES / (float)M_PI);
-                } else {
-                    flip = false;
-                    endTriangles = 0;
-                }
-            } else {
-                flip = false;
-                endTriangles = MAXRES;
-            }
-            endTriangles = std::min(endTriangles, MAXRES);
-            DrawHalfCircle(endTriangles, curr.p2, radius, curr.theta, flip, edgeCol, bodyCol);
-            bool hasStartCap = false;
-            if (i == 0) {
-                hasStartCap = true;
-            } else {
-                auto& prev = lines[i - 1];
-                if (fabsf(curr.p1.x - prev.p2.x) > 0.01f || fabsf(curr.p1.y - prev.p2.y) > 0.01f) {
-                    hasStartCap = true;
-                }
-            }
-            if (hasStartCap) {
-                DrawHalfCircle(MAXRES, curr.p1, radius, curr.theta + (float)M_PI, false, edgeCol, bodyCol);
-            }
-        }
-        rlEnd();
-        rlDrawRenderBatchActive();
-        rlEnableBackfaceCulling();
-        rlEnableColorBlend();
-        rlDisableDepthTest();
-        rlDisableDepthMask();
-        EndTextureMode();
+        cache.w = (int)ceilf(rawW);
+        cache.h = (int)ceilf(rawH);
         cache.valid = true;
         return cache;
     }
 
+    inline bool IsOversized(const std::vector<Vector2>& screenPath, float radius) {
+        if (screenPath.size() < 2) {
+            return false;
+        }
+        float minX = screenPath[0].x, maxX = screenPath[0].x;
+        float minY = screenPath[0].y, maxY = screenPath[0].y;
+        for (auto& p : screenPath) {
+            minX = std::min(minX, p.x); maxX = std::max(maxX, p.x);
+            minY = std::min(minY, p.y); maxY = std::max(maxY, p.y);
+        }
+        float pad = radius + 2.0f;
+        float rawW = (maxX - minX) + 2.0f * pad;
+        float rawH = (maxY - minY) + 2.0f * pad;
+        constexpr int MAX_PIXELS = 4 * 1024 * 1024;
+        return (rawW * rawH) > (float)MAX_PIXELS;
+    }
+
     inline void UnloadCache(SliderBodyCache& cache) {
         if (cache.valid) {
-            UnloadRenderTexture(cache.rt);
+            UnloadTexture(cache.tex);
             cache.valid = false;
         }
     }
@@ -395,10 +401,118 @@ namespace Orr::Render::Objects::Slider {
         if (!cache.valid) {
             return;
         }
-        DrawTextureRec(cache.rt.texture,
-            { 0, 0, (float)cache.w, -(float)cache.h },
-            { cache.x, cache.y },
-            { 255, 255, 255, alpha });
+        Rectangle src = { 0, 0, (float)cache.tex.width, (float)cache.tex.height };
+        Rectangle dst = { cache.x, cache.y, (float)cache.w, (float)cache.h };
+        DrawTexturePro(cache.tex, src, dst, { 0, 0 }, 0.0f, { 255, 255, 255, alpha });
+    }
+
+    inline void DrawSliderBodyDirect(const std::vector<Vector2>& screenPath, float radius, unsigned char alpha) {
+        if (screenPath.size() < 2) {
+            return;
+        }
+        BuildGradient();
+        int sw = GetScreenWidth();
+        int sh = GetScreenHeight();
+        float viewMinX = 0.0f, viewMinY = 0.0f;
+        float viewMaxX = (float)sw, viewMaxY = (float)sh;
+        float pad = radius + 2.0f;
+        float clipMinX = viewMinX - pad;
+        float clipMinY = viewMinY - pad;
+        float clipMaxX = viewMaxX + pad;
+        float clipMaxY = viewMaxY + pad;
+        std::vector<int> visibleSegs;
+        for (int s = 1; s < (int)screenPath.size(); s++) {
+            float ax = screenPath[s-1].x, ay = screenPath[s-1].y;
+            float bx = screenPath[s].x, by = screenPath[s].y;
+            float segMinX = std::min(ax, bx) - pad;
+            float segMinY = std::min(ay, by) - pad;
+            float segMaxX = std::max(ax, bx) + pad;
+            float segMaxY = std::max(ay, by) + pad;
+            if (segMaxX >= viewMinX && segMinX <= viewMaxX && segMaxY >= viewMinY && segMinY <= viewMaxY) {
+                visibleSegs.push_back(s);
+            }
+        }
+        if (visibleSegs.empty()) {
+            return;
+        }
+        float minX = clipMaxX, maxX = clipMinX;
+        float minY = clipMaxY, maxY = clipMinY;
+        for (int s : visibleSegs) {
+            float ax = screenPath[s-1].x, ay = screenPath[s-1].y;
+            float bx = screenPath[s].x, by = screenPath[s].y;
+            minX = std::min(minX, std::min(ax, bx) - pad);
+            minY = std::min(minY, std::min(ay, by) - pad);
+            maxX = std::max(maxX, std::max(ax, bx) + pad);
+            maxY = std::max(maxY, std::max(ay, by) + pad);
+        }
+        minX = std::max(minX, viewMinX);
+        minY = std::max(minY, viewMinY);
+        maxX = std::min(maxX, viewMaxX);
+        maxY = std::min(maxY, viewMaxY);
+        int w = (int)ceilf(maxX - minX);
+        int h = (int)ceilf(maxY - minY);
+        if (w < 1 || h < 1) {
+            return;
+        }
+        int iRadius = (int)ceilf(radius);
+        float radiusSq = radius * radius;
+        std::vector<float> distBuf(w * h, radius + 1.0f);
+        for (int s : visibleSegs) {
+            float ax = screenPath[s-1].x - minX;
+            float ay = screenPath[s-1].y - minY;
+            float bx = screenPath[s].x - minX;
+            float by = screenPath[s].y - minY;
+            int x0 = std::max(0, (int)(std::min(ax, bx) - iRadius));
+            int x1 = std::min(w - 1, (int)(std::max(ax, bx) + iRadius));
+            int y0 = std::max(0, (int)(std::min(ay, by) - iRadius));
+            int y1 = std::min(h - 1, (int)(std::max(ay, by) + iRadius));
+            float sdx = bx - ax, sdy = by - ay;
+            float segLenSq = sdx * sdx + sdy * sdy;
+            for (int py = y0; py <= y1; py++) {
+                float fy = (float)py + 0.5f;
+                for (int px = x0; px <= x1; px++) {
+                    float fx = (float)px + 0.5f;
+                    float t;
+                    if (segLenSq < 1e-8f) {
+                        t = 0.0f;
+                    } else {
+                        t = ((fx - ax) * sdx + (fy - ay) * sdy) / segLenSq;
+                        if (t < 0.0f) {
+                            t = 0.0f;
+                        } else if (t > 1.0f) {
+                            t = 1.0f;
+                        }
+                    }
+                    float cx = ax + t * sdx - fx;
+                    float cy = ay + t * sdy - fy;
+                    float dSq = cx * cx + cy * cy;
+                    if (dSq >= radiusSq) {
+                        continue;
+                    }
+                    float d = sqrtf(dSq);
+                    int idx = py * w + px;
+                    if (d < distBuf[idx]) {
+                        distBuf[idx] = d;
+                    }
+                }
+            }
+        }
+        std::vector<unsigned char> pixels(w * h * 4, 0);
+        for (int i = 0; i < w * h; i++) {
+            if (distBuf[i] >= radius) {
+                continue;
+            }
+            float t = 1.0f - distBuf[i] / radius;
+            GradientColor c = SampleGradient(t);
+            pixels[i * 4 + 0] = c.r;
+            pixels[i * 4 + 1] = c.g;
+            pixels[i * 4 + 2] = c.b;
+            pixels[i * 4 + 3] = (unsigned char)((float)c.a * ((float)alpha / 255.0f));
+        }
+        Image img = { pixels.data(), w, h, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 };
+        Texture2D tex = LoadTextureFromImage(img);
+        DrawTexture(tex, (int)minX, (int)minY, WHITE);
+        UnloadTexture(tex);
     }
 
     inline void Draw(const Orr::Reader::Beatmap::HitObject& obj,
@@ -439,7 +553,11 @@ namespace Orr::Render::Objects::Slider {
         auto to_screen = [&](Vector2 p) -> Vector2 {
             return { pf.x + p.x * pf.scale, pf.y + p.y * pf.scale };
         };
-        DrawCachedBody(body_cache, alpha);
+        if (IsOversized(screen_path, r)) {
+            DrawSliderBodyDirect(screen_path, r, alpha);
+        } else {
+            DrawCachedBody(body_cache, alpha);
+        }
         if (screen_path.size() >= 2) {
             DrawCircleV(screen_path.back(), r, { 30, 30, 30, alpha });
             DrawCircleLinesV(screen_path.back(), r, { 255, 255, 255, alpha });

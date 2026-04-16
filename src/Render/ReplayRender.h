@@ -145,6 +145,9 @@ namespace Orr::Render::ReplayRender {
             Orr::Render::Objects::Slider::UnloadCache(c);
         }
         gState.slider_body_caches.clear();
+        gState.slider_paths.clear();
+        gState.slider_screen_paths.clear();
+        gState.slider_path_lengths.clear();
     }
 
     inline Vector2 OsuToScreen(float ox, float oy, const Orr::Render::Playfield::Playfield& pf) {
@@ -169,7 +172,12 @@ namespace Orr::Render::ReplayRender {
             UpdateMusicStream(gState.music);
         }
 
-        float current_ms = gState.play_start_ms + (float)((GetTime() - gState.play_start_wall) * 1000.0);
+        float current_ms;
+        if (gState.music_loaded) {
+            current_ms = GetMusicTimePlayed(gState.music) * 1000.0f;
+        } else {
+            current_ms = gState.play_start_ms + (float)((GetTime() - gState.play_start_wall) * 1000.0);
+        }
 
         if (IsKeyPressed(KEY_SPACE) && !gState.skipped && !gState.beatmap.hit_objects.empty()) {
             float first_obj_sec = (float)gState.beatmap.hit_objects[0].time / 1000.0f;
@@ -177,8 +185,6 @@ namespace Orr::Render::ReplayRender {
             float skip_to_ms = skip_to_sec * 1000.0f;
             if (skip_to_ms > current_ms) {
                 SeekMusicStream(gState.music, skip_to_sec);
-                gState.play_start_ms = skip_to_ms;
-                gState.play_start_wall = GetTime();
                 current_ms = skip_to_ms;
                 gState.cursor_frame = 0;
                 while (gState.cursor_frame + 1 < (int)gState.abs_frames.size() &&
@@ -211,8 +217,10 @@ namespace Orr::Render::ReplayRender {
                             pf.y + gState.slider_paths[i][j].y * pf.scale
                         };
                     }
-                    gState.slider_body_caches[i] = Orr::Render::Objects::Slider::RenderSliderBody(
-                        gState.slider_screen_paths[i], r);
+                    if (!Orr::Render::Objects::Slider::IsOversized(gState.slider_screen_paths[i], r)) {
+                        gState.slider_body_caches[i] = Orr::Render::Objects::Slider::RenderSliderBody(
+                            gState.slider_screen_paths[i], r);
+                    }
                 }
             }
             gState.cached_pf_scale = pf.scale;
@@ -269,8 +277,8 @@ namespace Orr::Render::ReplayRender {
             }
 
             Vector2 cpos = OsuToScreen(cx, cy, pf);
-            DrawCircleV(cpos, 8.0f, { 255, 100, 100, 220 });
-            DrawCircleLinesV(cpos, 8.0f, WHITE);
+            DrawCircleV(cpos, 20.0f, BLACK);
+            DrawCircleV(cpos, 15.0f, { 255, 255, 255, 255 });
         }
 
         int fps = GetFPS();
@@ -298,3 +306,4 @@ namespace Orr::Render::ReplayRender {
         EndDrawing();
     }
 }
+
