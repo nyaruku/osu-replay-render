@@ -1,16 +1,16 @@
-﻿cmake_minimum_required(VERSION 3.15)
+﻿cmake_minimum_required(VERSION 3.11)
+include(FetchContent)
 
-# enter your project name/application output name
-project(template LANGUAGES CXX)
+project(osu-replay-render LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20) #cpp version
 set(CMAKE_CXX_SCAN_FOR_MODULES ON)
+set(CMAKE_BUILD_PARALLEL_LEVEL 16)
 
 # Base directories
 set(BASE_INCLUDE_PATH "${CMAKE_SOURCE_DIR}/src/includes")
 set(BASE_LIB_PATH "${CMAKE_SOURCE_DIR}/src/libs")
 
-# STATIC LIB, you are a stupid fuck if u dont
 option(USE_STATIC_LIB "Use static library" ON)
 
 # Debug/Release-specific paths
@@ -32,3 +32,33 @@ link_directories(${BASE_LIB_PATH} ${BUILD_LIB_PATH})
 
 # Project-specific CMakeLists.txt
 add_executable(${PROJECT_NAME} "./src/main.cpp")
+
+FetchContent_Declare(
+    raylib
+    GIT_REPOSITORY "https://github.com/raysan5/raylib.git"
+    GIT_TAG "5.5"
+    GIT_PROGRESS TRUE
+)
+
+# just in case
+#FetchContent_Declare(cpr
+#    GIT_REPOSITORY https://github.com/libcpr/cpr.git
+#    GIT_TAG "1.14.2"
+#)
+
+#FetchContent_MakeAvailable(cpr)
+FetchContent_Declare(
+    SQLiteCpp
+    GIT_REPOSITORY "https://github.com/SRombauts/SQLiteCpp.git"
+    GIT_TAG "3.3.2"
+    GIT_PROGRESS TRUE
+)
+set(SQLITECPP_RUN_CPPCHECK OFF CACHE BOOL "" FORCE)
+set(SQLITECPP_RUN_CPPLINT OFF CACHE BOOL "" FORCE)
+
+FetchContent_MakeAvailable(raylib SQLiteCpp)
+
+find_package(LibLZMA REQUIRED)
+find_package(OpenSSL REQUIRED)
+
+target_link_libraries(${PROJECT_NAME} LibLZMA::LibLZMA raylib sqlite3 OpenSSL::Crypto)
