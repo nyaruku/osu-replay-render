@@ -15,7 +15,7 @@
 
 int main(int argc, char* argv[])
 {
-    std::filesystem::path runtimePath = std::filesystem::path(argv[0]).parent_path();
+    std::filesystem::path runtimePath = std::filesystem::canonical(argv[0]).parent_path();
 
     Config::setPath(runtimePath / "config.json");
     Config::load();
