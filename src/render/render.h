@@ -1,0 +1,9 @@
+#pragma once
+#include <render/utils/font.h>
+#include <render/utils/toast.h>
+#include <render/objects/playfield.h>
+#include <render/views/indexstatus.h>
+#include <render/views/main.h>
+#include <render/views/settings.h>
+#include <render/views/replay.h>
+#include <render/views/debug.h>

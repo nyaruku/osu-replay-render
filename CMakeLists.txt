@@ -3,9 +3,14 @@ include(FetchContent)
 
 project(osu-replay-render LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 20) #cpp version
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_SCAN_FOR_MODULES ON)
 set(CMAKE_BUILD_PARALLEL_LEVEL 16)
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type (Debug, Release, RelWithDebInfo, MinSizeRel)" FORCE)
+    message(STATUS "No build type specified, defaulting to Release")
+endif()
 
 # Base directories
 set(BASE_INCLUDE_PATH "${CMAKE_SOURCE_DIR}/src/includes")
@@ -25,7 +30,7 @@ endif()
 ]===]
 
 # Add the include directories for the project
-include_directories(${BASE_INCLUDE_PATH} ${BUILD_INCLUDE_PATH})
+include_directories(${BASE_INCLUDE_PATH})
 
 # Add the library directories for linking
 link_directories(${BASE_LIB_PATH} ${BUILD_LIB_PATH})
@@ -39,6 +44,8 @@ FetchContent_Declare(
     GIT_TAG "5.5"
     GIT_PROGRESS TRUE
 )
+set(SQLITECPP_RUN_CPPCHECK OFF CACHE BOOL "" FORCE)
+set(SQLITECPP_RUN_CPPLINT OFF CACHE BOOL "" FORCE)
 
 # just in case
 #FetchContent_Declare(cpr
@@ -53,8 +60,6 @@ FetchContent_Declare(
     GIT_TAG "3.3.2"
     GIT_PROGRESS TRUE
 )
-set(SQLITECPP_RUN_CPPCHECK OFF CACHE BOOL "" FORCE)
-set(SQLITECPP_RUN_CPPLINT OFF CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(raylib SQLiteCpp)
 
@@ -62,3 +67,4 @@ find_package(LibLZMA REQUIRED)
 find_package(OpenSSL REQUIRED)
 
 target_link_libraries(${PROJECT_NAME} LibLZMA::LibLZMA raylib sqlite3 OpenSSL::Crypto)
+target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)

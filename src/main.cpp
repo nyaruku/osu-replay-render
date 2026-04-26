@@ -1,68 +1,148 @@
 #include <raylib.h>
-#include "Render/render.h"
-#include "Processor/Indexer.h"
-#include "Resources/resources.h"
+#include <cmath>
+#include <ctime>
+#include <chrono>
+#include <filesystem>
+#include <memory>
+#include <render/render.h>
+#include <utility/screenshot.h>
+#include <processor/indexer.h>
+#include <resources/resources.h>
+#include <config/config.h>
+#include <cli/cli.h>
 
-#define DB_NAME "beatmaps.db"
-#define SONGS_DIR "/home/railgun/osu!/osugame/Songs"
-#define HASH_THREADS 4
+#define SUPPORT_SCREEN_CAPTURE 0
 
 int main(int argc, char* argv[])
 {
+    std::filesystem::path runtimePath = std::filesystem::path(argv[0]).parent_path();
+
+    Config::setPath(runtimePath / "config.json");
+    Config::load();
+
+    Cli::Result cli = Cli::handle(argc, argv, runtimePath);
+    if (cli.action == Cli::Action::Exit)
+        return cli.exitCode;
+
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
     InitWindow(1280, 720, "osu-replay-render");
-    SetTargetFPS(9999999);
+    SetWindowState(FLAG_VSYNC_HINT);
+    SetExitKey(KEY_NULL);
     InitAudioDevice();
 
-    Font font = LoadFontFromMemory(".ttf",
-        Orr::Resources::Fonts::DroidSans_ttf,
-        Orr::Resources::Fonts::DroidSans_ttf_len,
-        72, nullptr, 0);
-    SetTextureFilter(font.texture, TEXTURE_FILTER_BILINEAR);
-    Orr::Render::SetActiveFont(font);
+    // Font + theme setup
+    ::Font font = LoadFontFromMemory(".ttf", Resources::Fonts::DroidSans_ttf, Resources::Fonts::DROID_SANS_TTF_LEN, 72, nullptr, 0);
+    SetTextureFilter(font.texture, TEXTURE_FILTER_TRILINEAR);
+    Render::Utils::Font::setActiveFont(font);
+    Config::Constants::applyThemeToRaygui(font);
 
-    Orr::Database::BeatmapDb bdb(DB_NAME);
-    Orr::Processor::Indexer indexer(bdb, SONGS_DIR, HASH_THREADS);
+    std::string dbPath = (runtimePath / "beatmaps.db").string();
+    Database::BeatmapDb beatmapDb(dbPath);
+    auto startIndexer = [&]() {
+        return std::make_unique<Processor::Indexer>(
+            beatmapDb,
+            Config::get<std::string>("general.songs_dir"),
+            Config::get<int>("indexer.hash_threads")
+        );
+    };
 
-    std::string pending_osr;
-    bool replay_active = false;
+    auto indexer = startIndexer();
+    ClearWindowState(FLAG_VSYNC_HINT);
+    SetTargetFPS(0);
 
-    if (argc > 1)
-        pending_osr = argv[1];
-    else
-        pending_osr = "/home/railgun/Downloads/solo-replay-osu_1257904_477724787.osr";
+    Utility::Screenshot::initScreenshotUtility(runtimePath);
+    std::string pendingOsr;
+    bool replayActive  = false;
+    bool settingsOpen  = false;
 
     while (!WindowShouldClose())
     {
-        if (!indexer.IsDone()) {
-            Orr::Render::IndexStatus::DrawBuildStatus(indexer.GetStatus());
+        if (IsKeyPressed(KEY_F11)) {
+            Render::Debug::toggle();
+        }
+
+        if (IsKeyPressed(KEY_F12)) {
+            Utility::Screenshot::takeScreenshot();
+        }
+        if (!indexer->isDone()) {
+            Render::IndexStatus::drawBuildStatus(indexer->getStatus());
             continue;
         }
 
-        if (!replay_active && !pending_osr.empty()) {
-            Orr::Render::ReplayRender::Init(pending_osr, bdb);
-            replay_active = true;
+        {
+            auto s = indexer->getStatus();
+            if (!s.error.empty()) {
+                Render::IndexStatus::drawBuildStatus(s);
+                if (IsKeyPressed(KEY_ESCAPE)) {
+                    Render::Settings::open();
+                    settingsOpen = true;
+                    indexer = std::make_unique<Processor::Indexer>(beatmapDb, "", 0); // idle
+                }
+                continue;
+            }
         }
 
-        if (!replay_active) {
-            std::string dropped = Orr::Render::MainMenu::Draw();
-            if (!dropped.empty()) {
-                pending_osr = dropped;
-                Orr::Render::ReplayRender::Init(pending_osr, bdb);
-                replay_active = true;
-            }
-        } else {
-            if (IsKeyPressed(KEY_ESCAPE)) {
-                Orr::Render::ReplayRender::Unload();
-                replay_active = false;
+        if (!replayActive && !pendingOsr.empty()) {
+            Render::Replay::init(pendingOsr, beatmapDb);
+            Render::Replay::precacheSliderTextures();
+
+            replayActive = true;
+
+            // apply replay specific settings
+            if (Config::get<bool>("render.replay.vsync")) {
+                SetWindowState(FLAG_VSYNC_HINT);
+                SetTargetFPS(0);
+            } else if (Config::get<bool>("render.replay.fps_unlimited")) {
+                ClearWindowState(FLAG_VSYNC_HINT);
+                SetTargetFPS(0);
             } else {
-                Orr::Render::ReplayRender::Draw(bdb);
+                ClearWindowState(FLAG_VSYNC_HINT);
+                SetTargetFPS(Config::get<int>("render.replay.fps_limit"));
             }
+        }
+
+        if (replayActive) {
+            if (IsKeyPressed(KEY_ESCAPE)) {
+                Render::Replay::unload();
+                replayActive = false;
+                pendingOsr.clear();
+                // Restore vsync for menus
+                SetWindowState(FLAG_VSYNC_HINT);
+                SetTargetFPS(0);
+            } else {
+                Render::Replay::draw(beatmapDb);
+            }
+            continue;
+        }
+
+        if (settingsOpen) {
+            SetWindowState(FLAG_VSYNC_HINT);
+            auto result = Render::Settings::draw();
+            settingsOpen = result.stayOpen;
+            if (result.saved)
+                Render::Utils::Toast::push("Settings saved", Render::Utils::Toast::Level::Success);
+            if (result.needsReindex) {
+                Render::Utils::Toast::push("Songs directory changed — reindexing...", Render::Utils::Toast::Level::Info, 4.0f);
+                indexer = startIndexer();
+                ClearWindowState(FLAG_VSYNC_HINT);
+                SetTargetFPS(0);
+            }
+            continue;
+        }
+
+        SetWindowState(FLAG_VSYNC_HINT);
+        Render::MainMenu::Result result = Render::MainMenu::draw();
+        if (result.action == Render::MainMenu::Action::OpenReplay && !result.osrPath.empty()) {
+            pendingOsr = result.osrPath;
+        } else if (result.action == Render::MainMenu::Action::OpenSettings) {
+            Render::Settings::open();
+            settingsOpen = true;
         }
     }
 
-    if (replay_active)
-        Orr::Render::ReplayRender::Unload();
+    if (replayActive) {
+        Render::Replay::unload();
+    }
 
     UnloadFont(font);
     CloseAudioDevice();
